@@ -1,6 +1,6 @@
 ---
 title: "Homework 4: Bayesian Inference for Mixture Models"
-author: "BIOS 731 – Advanced Statistical Computing"
+author: "Rita Fu"
 format:
   pdf:
     colorlinks: true
@@ -18,6 +18,10 @@ execute:
 ```{r, echo = FALSE}
 library(tidyverse)
 ```
+
+## Github repo web address
+https://github.com/Rita-zrFu/bios731_hw4_fu
+
 
 ## Context and learning objectives
 
@@ -80,13 +84,170 @@ Show the derivations and resulting Gibb's sampler updates.  Specifically, derive
 - $p(c_i|y_i, \mu)$
 - $p(\mu_k|y, c)$
 
-
-
 Implement the Gibb's sampler in R. Your Gibb's R function should
 
 - run the sampler
 - store posterior draws
 - return posterior summaries (estimates of the cluster assignments and means).
+
+### Solution 1.1
+
+We consider the Bayesian K-component Gaussian mixture model defined above. We want to derive the Gibb's sampler updates for the posterior distribution, $p(\mu, \textbf{c}|y)$. By Bayes' rule, $p(c_i=k|y_i, \mu) \propto p(y_i|c_i=k, \mu) p(c_i=k)$ and $p(\mu_k|y, c) \propto p(y|c, \mu_k) p(\mu_k)$.
+
+Since the prior on $c_i$ is uniform, we have $p(c_i=k) = 1/K$. The likelihood $p(y_i|c_i=k, \mu)$ is given by the Gaussian distribution with mean $\mu_k$ and variance 1, so $p(c_i=k|y_i, \mu) \propto \frac{1}{K} \phi(y_i; \mu_k, 1)$, where $\phi$ is the Gaussian density function.
+
+Because $1/K$ is constant across all $k$, we can simplify this to $p(c_i=k|y_i, \mu) = \frac{\phi(y_i; \mu_k, 1)}{\sum_{\ell=1}^K\phi(y_i;\mu_{\ell},1)}$. Equivalently, writing out the Gaussian kernel, we have $p(c_i=k|y_i, \mu) = \frac{\exp\{-\frac{1}{2}(y_i-\mu_k)^2\}}{\sum_{\ell=1}^K\exp\{-\frac{1}{2}(y_i-\mu_{\ell})^2\}}$. So the Gibbs update for $c_i$ is a categorical distribution with probabilities proportional to the Gaussian likelihoods. $c_i|y_i, \mu \sim Categorical\left(\frac{\exp\{-\frac{1}{2}(y_i-\mu_1)^2\}}{\sum_{\ell=1}^K\exp\{-\frac{1}{2}(y_i-\mu_{\ell})^2\}}, \ldots, \frac{\exp\{-\frac{1}{2}(y_i-\mu_K)^2\}}{\sum_{\ell=1}^K\exp\{-\frac{1}{2}(y_i-\mu_{\ell})^2\}}\right)$.
+
+### Solution 1.2
+
+Now derive $p(\mu_k|y, c)$. Conditioning on $c$, only those observations $y_i$ for which $c_i=k$ contribute to the likelihood. Let $\mathcal{I}_k = \{i: c_i=k\}$ be the set of indices for which $c_i=k$, $n_k = |\mathcal{I}_k|$ be the number of observations in cluster $k$. Then $p(\mu_k|y, c) \propto p(y|c, \mu_k) p(\mu_k) = \prod_{i\in\mathcal{I}_k} p(y_i|c_i=k, \mu_k) p(\mu_k)$. Using the prior $\mu_k \sim N(0, \sigma^2)$ and the likelihood $y_i|c_i=k, \mu_k \sim N(\mu_k, 1)$, we have $p(\mu_k|y, c) \propto \exp\left\{-\frac{1}{2\sigma^2}\mu_k^2 - \frac{1}{2}\sum_{i\in\mathcal{I}_k}(y_i-\mu_k)^2\right\}$.
+
+Expand the quadratic terms in the exponent to get $p(\mu_k|y, c) \propto \exp\left\{-\frac{1}{2}\left(\frac{1}{\sigma^2} + n_k\right)\mu_k^2 + \left(\sum_{i\in\mathcal{I}_k}y_i\right)\mu_k\right\}$. This is the kernel of a Gaussian distribution. Completing the square, we find that $\mu_k|y, c \sim N\left(\frac{\sum_{i\in\mathcal{I}_k}y_i}{n_k + 1/\sigma^2}, \frac{1}{n_k + 1/\sigma^2}\right)$. 
+
+### Solution 1.3
+
+Combining the results from 1.1 and 1.2, we have the Gibbs sampler updates:
+
+1. For each $i$, sample $c_i|y_i, \mu \sim Categorical\left(\frac{\exp\{-\frac{1}{2}(y_i-\mu_1)^2\}}{\sum_{\ell=1}^K\exp\{-\frac{1}{2}(y_i-\mu_{\ell})^2\}}, \ldots, \frac{\exp\{-\frac{1}{2}(y_i-\mu_K)^2\}}{\sum_{\ell=1}^K\exp\{-\frac{1}{2}(y_i-\mu_{\ell})^2\}}\right)$.
+
+2. For each $k$, sample $\mu_k|y, c \sim N\left(\frac{\sum_{i\in\mathcal{I}_k}y_i}{n_k + 1/\sigma^2}, \frac{1}{n_k + 1/\sigma^2}\right)$.
+
+Repeat these steps for a number of iterations to obtain posterior samples of $\mu$ and $c$.
+
+
+### Implement in R
+
+```{r, echo = FALSE}
+
+gibbs_mixnorm <- function(y, K, sigma2, n_iter = 5000, burn_in = 1000,
+                          init_mu = NULL, init_c = NULL, seed = NULL) {
+  if (!is.null(seed)) set.seed(seed)
+
+  n <- length(y)
+
+  # --- initialization ---
+  if (is.null(init_mu)) {
+    # initialize using quantiles of the data
+    probs <- seq(0.1, 0.9, length.out = K)
+    mu <- as.numeric(quantile(y, probs = probs))
+  } else {
+    mu <- init_mu
+  }
+
+  if (is.null(init_c)) {
+    # initialize by nearest mean
+    dist_mat <- sapply(mu, function(m) abs(y - m))
+    c_vec <- max.col(-dist_mat)
+  } else {
+    c_vec <- init_c
+  }
+
+  # storage
+  mu_draws <- matrix(NA_real_, nrow = n_iter, ncol = K)
+  c_draws  <- matrix(NA_integer_, nrow = n_iter, ncol = n)
+
+  # helper: reorder labels by mu
+  relabel_by_mu <- function(mu, c_vec) {
+    ord <- order(mu)
+    mu_new <- mu[ord]
+    # map old labels -> new labels
+    new_label <- integer(length(mu))
+    new_label[ord] <- seq_along(ord)
+    c_new <- new_label[c_vec]
+    list(mu = mu_new, c = c_new)
+  }
+
+  # initial relabel
+  tmp <- relabel_by_mu(mu, c_vec)
+  mu <- tmp$mu
+  c_vec <- tmp$c
+
+  for (iter in seq_len(n_iter)) {
+
+    # --- Step 1: sample c_i | y_i, mu ---
+    for (i in seq_len(n)) {
+      log_prob <- dnorm(y[i], mean = mu, sd = 1, log = TRUE)
+      # stabilize numerically
+      log_prob <- log_prob - max(log_prob)
+      prob <- exp(log_prob)
+      prob <- prob / sum(prob)
+
+      c_vec[i] <- sample.int(K, size = 1, prob = prob)
+    }
+
+    # --- Step 2: sample mu_k | y, c ---
+    for (k in seq_len(K)) {
+      idx <- which(c_vec == k)
+      n_k <- length(idx)
+      sum_yk <- sum(y[idx])
+
+      post_var  <- 1 / (n_k + 1 / sigma2)
+      post_mean <- post_var * sum_yk
+
+      mu[k] <- rnorm(1, mean = post_mean, sd = sqrt(post_var))
+    }
+
+    # relabel to reduce label switching
+    tmp <- relabel_by_mu(mu, c_vec)
+    mu <- tmp$mu
+    c_vec <- tmp$c
+
+    # store draws
+    mu_draws[iter, ] <- mu
+    c_draws[iter, ]  <- c_vec
+  }
+
+  # posterior summaries after burn-in
+  keep <- (burn_in + 1):n_iter
+  mu_post <- mu_draws[keep, , drop = FALSE]
+  c_post  <- c_draws[keep, , drop = FALSE]
+
+  # posterior mean of mu_k
+  mu_hat <- colMeans(mu_post)
+
+  # posterior mode assignment for each observation
+  c_hat <- apply(c_post, 2, function(x) {
+    ux <- unique(x)
+    ux[which.max(tabulate(match(x, ux)))]
+  })
+
+  # posterior assignment probabilities
+  z_prob <- matrix(0, nrow = n, ncol = K)
+  for (k in seq_len(K)) {
+    z_prob[, k] <- colMeans(c_post == k)
+  }
+
+  list(
+    mu_draws = mu_draws,
+    c_draws = c_draws,
+    mu_hat = mu_hat,
+    c_hat = c_hat,
+    z_prob = z_prob,
+    burn_in = burn_in
+  )
+}
+```
+      
+```{r example, echo = FALSE}
+set.seed(123)
+
+# example simulated data
+n <- 300
+K <- 3
+sigma2 <- 100
+
+mu_true <- c(-3, 0, 4)
+c_true <- sample(1:K, size = n, replace = TRUE)
+y <- rnorm(n, mean = mu_true[c_true], sd = 1)
+
+fit <- gibbs_mixnorm(y, K = K, sigma2 = sigma2,
+                     n_iter = 4000, burn_in = 1000, seed = 123)
+
+fit$mu_hat
+head(fit$c_hat)
+head(fit$z_prob)
+```
+
 
 
 ## Problem 2: Variational inference derivations
@@ -99,12 +260,425 @@ Your variational inference R function should
 - return final estimates of the cluster assignments and means
 
 
+### Solution
+
+**Mean-field variation family**
+
+To derive the CAVI algorithm for the posterior distribution $p(\mu, \textbf{c}|y)$ under a mean-field approximation, we assume that the variational distribution factorizes as $q(\mu, \textbf{c}) = \prod_{k=1}^K q(\mu_k) \prod_{i=1}^n q(c_i)$. Let $q(c_i=k)=r_{ik}$, $\sum_{k=1}^K r_{ik}=1$ for each $i$ and assume each variation factor for $\mu_k$ is Gaussian, $q(\mu_k) = N(m_k, s_k^2)$.
+Thus the variational parameters are $\{m_k, s_k^2\}_{k=1}^K$ for the means and variance and $\{r_{ik}\}_{i=1,k=1}^{n,K}$ for the cluster assignment probabilities.
+
+**Joint log-density**
+
+Under the model stated in the problem, ignoring constants that do not depend on the variational parameters, the joint log-density is:
+\begin{align*}
+\log p(y, c, \mu) &= \sum_{i=1}^n \log p(y_i|c_i, \mu) + \sum_{i=1}^n \log p(c_i) + \sum_{k=1}^K \log p(\mu_k) \\
+&= -\frac{1}{2}\sum_{i=1}^n (y_i - \mu_{c_i})^2 - \frac{1}{2\sigma^2}\sum_{k=1}^K \mu_k^2 + \text{const}
+\end{align*}
+
+**CAVI update for $q(c_i)$**
+
+For the cluster assignment $c_i$, the CAVI update is given by:
+\begin{align*}
+\log q(c_i=k) &\propto \mathbb{E}_{q(\mu)}[\log p(y_i|c_i=k, \mu) + \log p(c_i=k)] \\
+&= \mathbb{E}_{q(\mu)}\left[-\frac{1}{2}(y_i - \mu_k)^2\right] + \text{const} \\
+&= -\frac{1}{2}\left(y_i^2 - 2y_i m_k + m_k^2 + s_k^2\right) + \text{const}
+\end{align*}
+Exponentiating and normalizing gives:
+\[
+r_{ik} = q(c_i=k) = \frac{\exp\left(-\frac{1}{2}(y_i^2 - 2y_i m_k + m_k^2 + s_k^2)\right)}{\sum_{\ell=1}^K \exp\left(-\frac{1}{2}(y_i^2 - 2y_i m_\ell + m_\ell^2 + s_\ell^2)\right)}
+\]
+**CAVI update for $q(\mu_k)$**
+
+For the mean $\mu_k$, the CAVI update is given by:
+\begin{align*}
+\log q(\mu_k) &\propto \mathbb{E}_{q(c \setminus c_i)}[\log p(y|c, \mu) + \log p(\mu_k)] \\
+&= \mathbb{E}_{q(c)}\left[-\frac{1}{2}\sum_{i=1}^n (y_i - \mu_{c_i})^2\right] - \frac{1}{2\sigma^2}\mu_k^2 + \text{const} \\
+&= -\frac{1}{2}\sum_{i=1}^n r_{ik}(y_i^2 - 2y_i m_k + m_k^2 + s_k^2) - \frac{1}{2\sigma^2}\mu_k^2 + \text{const}
+\end{align*}
+This is the kernel of a Gaussian distribution. Completing the square, we find that $q(\mu_k) = N(m_k, s_k^2)$ where:
+\[
+s_k^2 = \frac{1}{\sum_{i=1}^n r_{ik} + 1/\sigma^2}, \quad m_k = s_k^2 \sum_{i=1}^n r_{ik} y_i
+\]
+
+**Summary of the CAVI updates**
+
+1. Update cluster assignment probabilities:
+\[
+r_{ik} = \frac{\exp\left(-\frac{1}{2}(y_i^2 - 2y_i m_k + m_k^2 + s_k^)2)\right)}{\sum_{\ell=1}^K \exp\left(-\frac{1}{2}(y_i^2 - 2y_i m_\ell + m_\ell^2 + s_\ell^2)\right)}
+\]
+2. Update mean parameters:
+\[
+s_k^2 = \frac{1}{\sum_{i=1}^n r_{ik} + 1/\sigma^2}, \quad m_k = s_k^2 \sum_{i=1}^n r_{ik} y_i
+\]
+These two steps are iterated until convergence, which can be monitored using the ELBO.
+
+**ELBO derivation**
+
+The ELBO is given by:
+\begin{align*}
+\text{ELBO} &= \mathbb{E}_{q}[\log p(y, c, \mu)] - \mathbb{E}_{q}[\log q(c, \mu)] \\
+&= \sum_{i=1}^n \sum_{k=1}^K r_{ik} \left(-\frac{1}{2}(y_i^2 - 2y_i m_k + m_k^2 + s_k^2)\right) - \frac{1}{2\sigma^2}\sum_{k=1}^K (m_k^2 + s_k^2) - \sum_{i=1}^n \sum_{k=1}^K r_{ik} \log r_{ik} + \frac{1}{2}\sum_{k=1}^K \log s_k^2 + \text{const}
+\end{align*}
+
+**CAVI algorithm**
+
+```{r cavi, echo = FALSE}
+vb_mixnorm <- function(y, K, sigma2, max_iter = 1000, tol = 1e-8,
+                       init_m = NULL, init_r = NULL, seed = NULL) {
+  if (!is.null(seed)) set.seed(seed)
+
+  n <- length(y)
+
+  # --- initialization ---
+  if (is.null(init_m)) {
+    probs <- seq(0.1, 0.9, length.out = K)
+    m <- as.numeric(quantile(y, probs = probs))
+  } else {
+    m <- init_m
+  }
+
+  s2 <- rep(1, K)
+
+  if (is.null(init_r)) {
+    log_r <- sapply(seq_len(K), function(k) dnorm(y, mean = m[k], sd = 1, log = TRUE))
+    log_r <- sweep(log_r, 1, apply(log_r, 1, max), "-")
+    r <- exp(log_r)
+    r <- r / rowSums(r)
+  } else {
+    r <- init_r
+  }
+
+  elbo <- numeric(max_iter)
+
+  # helper: reorder components by current m
+  relabel_vb <- function(m, s2, r) {
+    ord <- order(m)
+    list(
+      m = m[ord],
+      s2 = s2[ord],
+      r = r[, ord, drop = FALSE]
+    )
+  }
+
+  # ELBO function
+  compute_elbo <- function(y, r, m, s2, sigma2) {
+    n <- length(y)
+    K <- length(m)
+
+    # E log p(mu)
+    term_mu_prior <-
+      - K / 2 * log(2 * pi * sigma2) -
+      (1 / (2 * sigma2)) * sum(m^2 + s2)
+
+    # E log p(c)
+    term_c_prior <- - n * log(K)
+
+    # E log p(y | c, mu)
+    quad <- outer(y, m, FUN = function(yy, mm) yy^2 - 2 * yy * mm) +
+      matrix(m^2 + s2, nrow = n, ncol = K, byrow = TRUE)
+
+    term_like <-
+      - n / 2 * log(2 * pi) -
+      0.5 * sum(r * quad)
+
+    # - E log q(mu) = entropy of Gaussian factors
+    term_qmu <- sum(0.5 * log(2 * pi * exp(1) * s2))
+
+    # - E log q(c) = categorical entropy
+    eps <- 1e-12
+    term_qc <- -sum(r * log(pmax(r, eps)))
+
+    term_mu_prior + term_c_prior + term_like + term_qmu + term_qc
+  }
+
+  for (iter in seq_len(max_iter)) {
+
+    # --- update q(c_i): r_ik ---
+    log_r <- matrix(NA_real_, nrow = n, ncol = K)
+    for (k in seq_len(K)) {
+      log_r[, k] <- y * m[k] - 0.5 * (m[k]^2 + s2[k])
+    }
+
+    # numerical stabilization
+    log_r <- sweep(log_r, 1, apply(log_r, 1, max), "-")
+    r <- exp(log_r)
+    r <- r / rowSums(r)
+
+    # --- update q(mu_k): m_k, s_k^2 ---
+    Nk <- colSums(r)
+    s2 <- 1 / (1 / sigma2 + Nk)
+    m <- s2 * colSums(r * y)
+
+    # relabel for interpretability
+    tmp <- relabel_vb(m, s2, r)
+    m <- tmp$m
+    s2 <- tmp$s2
+    r <- tmp$r
+
+    # --- compute ELBO ---
+    elbo[iter] <- compute_elbo(y, r, m, s2, sigma2)
+
+    if (iter > 1) {
+      if (abs(elbo[iter] - elbo[iter - 1]) < tol) {
+        elbo <- elbo[1:iter]
+        break
+      }
+    }
+  }
+
+  # final hard assignments
+  c_hat <- max.col(r, ties.method = "first")
+
+  list(
+    m = m,
+    s2 = s2,
+    r = r,
+    c_hat = c_hat,
+    mu_hat = m,
+    elbo = elbo,
+    n_iter = length(elbo)
+  )
+}
+```
+
+```{r cavi example, echo= FALSE}
+set.seed(123)
+
+n <- 300
+K <- 3
+sigma2 <- 100
+
+mu_true <- c(-3, 0, 4)
+c_true <- sample(1:K, size = n, replace = TRUE)
+y <- rnorm(n, mean = mu_true[c_true], sd = 1)
+
+vb_fit <- vb_mixnorm(y, K = K, sigma2 = sigma2,
+                     max_iter = 1000, tol = 1e-8, seed = 123)
+
+vb_fit$mu_hat
+head(vb_fit$c_hat)
+tail(vb_fit$elbo, 5)
+```
+
+
 ## Problem 3: Fit to data
 
 Implement the Gibb's sampler and variational inference updates in R.  Fit to the Old Faithful waiting times dataset used in the EM lecture.
 
 Compare computation times and estimates from variational bayes to mean parameter estimates from the Gibb's sampler.  For Gibb's sampler, also do diagnostic plots, fit multiple chains, comment on convergence and effective sample size.
 
+```{r fit_data, echo = FALSE}
+library(coda)
+
+# -----------------------------
+# Data
+# -----------------------------
+data("faithful")
+y <- faithful$waiting
+n <- length(y)
+
+# Model settings
+K <- 2
+sigma2 <- 1000
+
+# -----------------------------
+# Variational Bayes fit
+# -----------------------------
+set.seed(123)
+
+time_vb <- system.time({
+  fit_vb <- vb_mixnorm(
+    y = y,
+    K = K,
+    sigma2 = sigma2,
+    max_iter = 5000,
+    tol = 1e-8,
+    init_m = c(55, 80),   # similar to EM lecture initialization
+    seed = 123
+  )
+})
+
+# -----------------------------
+# Gibbs sampler: multiple chains
+# -----------------------------
+init_mu_list <- list(
+  c(55, 80),
+  c(50, 85),
+  c(60, 78)
+)
+
+gibbs_fits <- vector("list", length(init_mu_list))
+gibbs_times <- vector("list", length(init_mu_list))
+
+for (j in seq_along(init_mu_list)) {
+  gibbs_times[[j]] <- system.time({
+    gibbs_fits[[j]] <- gibbs_mixnorm(
+      y = y,
+      K = K,
+      sigma2 = sigma2,
+      n_iter = 10000,
+      burn_in = 2000,
+      init_mu = init_mu_list[[j]],
+      seed = 100 + j
+    )
+  })
+}
+
+# -----------------------------
+# Compare estimates
+# -----------------------------
+gibbs_mu_hat <- do.call(
+  rbind,
+  lapply(gibbs_fits, function(fit) fit$mu_hat)
+)
+
+results_est <- data.frame(
+  Method = c("VB", "Gibbs chain 1", "Gibbs chain 2", "Gibbs chain 3", "Gibbs average"),
+  mu1 = c(
+    fit_vb$mu_hat[1],
+    gibbs_mu_hat[1, 1],
+    gibbs_mu_hat[2, 1],
+    gibbs_mu_hat[3, 1],
+    mean(gibbs_mu_hat[, 1])
+  ),
+  mu2 = c(
+    fit_vb$mu_hat[2],
+    gibbs_mu_hat[1, 2],
+    gibbs_mu_hat[2, 2],
+    gibbs_mu_hat[3, 2],
+    mean(gibbs_mu_hat[, 2])
+  )
+)
+
+results_est
+
+# Cluster sizes from hard assignments
+vb_cluster_sizes <- table(fit_vb$c_hat)
+vb_cluster_sizes
+
+gibbs_cluster_sizes <- lapply(gibbs_fits, function(fit) table(fit$c_hat))
+gibbs_cluster_sizes
+
+# -----------------------------
+# Compare computation time
+# -----------------------------
+results_time <- data.frame(
+  Method = c("VB", "Gibbs chain 1", "Gibbs chain 2", "Gibbs chain 3"),
+  Elapsed = c(
+    as.numeric(time_vb["elapsed"]),
+    as.numeric(gibbs_times[[1]]["elapsed"]),
+    as.numeric(gibbs_times[[2]]["elapsed"]),
+    as.numeric(gibbs_times[[3]]["elapsed"])
+  )
+)
+
+results_time
+
+# -----------------------------
+# VB convergence: ELBO plot
+# -----------------------------
+plot(
+  fit_vb$elbo,
+  type = "l",
+  xlab = "Iteration",
+  ylab = "ELBO",
+  main = "ELBO trajectory for variational Bayes"
+)
+
+# -----------------------------
+# Visual comparison on data
+# -----------------------------
+hist(
+  y,
+  breaks = 30,
+  probability = TRUE,
+  main = "Old Faithful waiting times",
+  xlab = "Waiting time"
+)
+
+abline(v = fit_vb$mu_hat, lty = 2, lwd = 2)
+abline(v = colMeans(gibbs_mu_hat), lty = 3, lwd = 2)
+
+legend(
+  "topright",
+  legend = c("VB means", "Gibbs posterior means"),
+  lty = c(2, 3),
+  lwd = 2,
+  bty = "n"
+)
+
+# -----------------------------
+# Convert Gibbs output to coda objects
+# -----------------------------
+mcmc_list_both <- mcmc.list(
+  lapply(gibbs_fits, function(fit) {
+    mcmc(fit$mu_draws[(fit$burn_in + 1):nrow(fit$mu_draws), , drop = FALSE])
+  })
+)
+
+# Name the parameters for prettier output
+for (j in seq_along(mcmc_list_both)) {
+  colnames(mcmc_list_both[[j]]) <- c("mu1", "mu2")
+}
+
+# -----------------------------
+# Gibbs diagnostics
+# -----------------------------
+
+# Trace plots and densities
+plot(mcmc_list_both)
+
+# Autocorrelation plots
+acfplot(mcmc_list_both[[1]][, "mu1"])
+acfplot(mcmc_list_both[[1]][, "mu2"])
+
+# Gelman-Rubin diagnostics
+gelman_results <- gelman.diag(mcmc_list_both)
+gelman_results
+
+gelman.plot(mcmc_list_both)
+
+# Effective sample size
+ess_results <- effectiveSize(mcmc_list_both)
+ess_results
+
+# Optional: posterior summaries from coda
+summary(mcmc_list_both)
+```
+
+We fit the Gibbs sampler from Problem 1 and the CAVI algorithm from Problem 2 to the Old Faithful waiting-time data used in the EM lecture. Consistent with the EM lecture example, we fit a two-component Gaussian mixture model (K=2). The prior variance for the component means was set to $\sigma^2=1000$.
+
+**Parameter estimates:**
+
+The variational Bayes estimates of the two component means were $\hat{\mu}_1 \approx 54.8$ and $\hat{\mu}_2 \approx 80.3$. For the Gibbs sampler, I ran three chains with dispersed initial values and computed posterior mean estimates after discarding the first 2000 iterations as burn-in. The resulting posterior mean estimates were: (54.747, 80.285), (54.748, 80.285), and (54.749, 80.286) for the three chains respectively. Averaging the three chains gives $\hat{\mu}_1 \approx 54.748$ and $\hat{\mu}_2 \approx 80.285$. The VB and Gibbs estimates are very close to each other, which is reassuring.
+
+**Computation time:**
+
+The elapsed times were: 0.001 seconds for VB, 7.584, 7.421, 7.441 seconds for the three Gibbs chains respectively. The VB algorithm is much faster than the Gibbs sampler, which is expected since VB is an optimization-based method while Gibbs sampling is a Markov chain Monte Carlo method that requires many iterations to approximate the posterior distribution.
+
+**Variational Bayes convergence:**
+
+The ELBO plot increased from the first to the second iteration and then essentially stabilized by the third iteration. This indicates very rapid convergence of the CAVI algorithm for this dataset. The quick stabilization is consistent with the fact that the two clusters in the Old Faithful waiting-time data are well separated, making the optimization problem relatively easy.
+
+**Gibbs sampler diagnostics:**
+
+The trace plots for both $\mu_1$ and $\mu_2$ show that all three chains fluctuate around stable values with no visible trend or drift. The chains overlap heavily after burn-in, suggesting that they are sampling from the same stationary distribution. The posterior densities for both parameters are unimodal and concentrated, which is consistent with the stability seen in the trace plots.
+
+The autocorrelation plots indicate very low autocorrelation at essentially all lags for both $\mu_1$ and $\mu_2$. This suggests excellent mixing of the Gibbs sampler. Because the chains mix so well, the Monte Carlo error in posterior mean estimation is very small.
+
+The Gelman–Rubin shrink factor plots are also reassuring. For both $\mu_1$ and $\mu_2$, the shrink factors rapidly approach 1 and remain essentially at 1 for the rest of the chain. This indicates strong agreement across chains and supports the conclusion that convergence has been achieved.
+
+**Effective sample size:**
+
+From the combined MCMC summary, each chain retained 8000 post-burn-in draws. The posterior summaries were:
+
+For $\mu_1$: mean = 54.748, sd = 0.099, time-series SE = 0.0006339. For $\mu_2$: mean = 80.285, sd = 0.076, time-series SE = 0.0004855. 
+
+The quantiles were:
+
+For $\mu_1$: 2.5% = 54.553, 25% = 54.676, 50% = 54.748, 75% = 54.819, 97.5% = 54.943. For $\mu_2$: 2.5% = 80.136, 25% = 80.243, 50% = 80.285, 75% = 80.327, 97.5% = 80.434.
+
+The naive SE and time-series SE are almost identical for both parameters, which again reflects very weak autocorrelation. In other words, the effective sample size is very close to the nominal sample size, so the retained Gibbs samples contain nearly as much information as an equal number of independent samples. This provides further evidence that the Gibbs sampler mixed efficiently and produced reliable posterior summaries.
 
 ## Problem 4: Perform a simulation study on the cluster
 
