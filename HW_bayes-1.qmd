@@ -284,9 +284,8 @@ For the cluster assignment $c_i$, the CAVI update is given by:
 &= -\frac{1}{2}\left(y_i^2 - 2y_i m_k + m_k^2 + s_k^2\right) + \text{const}
 \end{align*}
 Exponentiating and normalizing gives:
-\[
-r_{ik} = q(c_i=k) = \frac{\exp\left(-\frac{1}{2}(y_i^2 - 2y_i m_k + m_k^2 + s_k^2)\right)}{\sum_{\ell=1}^K \exp\left(-\frac{1}{2}(y_i^2 - 2y_i m_\ell + m_\ell^2 + s_\ell^2)\right)}
-\]
+$$r_{ik} = q(c_i=k) = \frac{\exp\left(-\frac{1}{2}(y_i^2 - 2y_i m_k + m_k^2 + s_k^2)\right)}{\sum_{\ell=1}^K \exp\left(-\frac{1}{2}(y_i^2 - 2y_i m_\ell + m_\ell^2 + s_\ell^2)\right)}$$
+
 **CAVI update for $q(\mu_k)$**
 
 For the mean $\mu_k$, the CAVI update is given by:
@@ -296,20 +295,14 @@ For the mean $\mu_k$, the CAVI update is given by:
 &= -\frac{1}{2}\sum_{i=1}^n r_{ik}(y_i^2 - 2y_i m_k + m_k^2 + s_k^2) - \frac{1}{2\sigma^2}\mu_k^2 + \text{const}
 \end{align*}
 This is the kernel of a Gaussian distribution. Completing the square, we find that $q(\mu_k) = N(m_k, s_k^2)$ where:
-\[
-s_k^2 = \frac{1}{\sum_{i=1}^n r_{ik} + 1/\sigma^2}, \quad m_k = s_k^2 \sum_{i=1}^n r_{ik} y_i
-\]
+$$s_k^2 = \frac{1}{\sum_{i=1}^n r_{ik} + 1/\sigma^2}, \quad m_k = s_k^2 \sum_{i=1}^n r_{ik} y_i$$
 
 **Summary of the CAVI updates**
 
 1. Update cluster assignment probabilities:
-\[
-r_{ik} = \frac{\exp\left(-\frac{1}{2}(y_i^2 - 2y_i m_k + m_k^2 + s_k^)2)\right)}{\sum_{\ell=1}^K \exp\left(-\frac{1}{2}(y_i^2 - 2y_i m_\ell + m_\ell^2 + s_\ell^2)\right)}
-\]
+$$r_{ik} = \frac{\exp\left(-\frac{1}{2}(y_i^2 - 2y_i m_k + m_k^2 + s_k^2)\right)}{\sum_{\ell=1}^K \exp\left(-\frac{1}{2}(y_i^2 - 2y_i m_\ell + m_\ell^2 + s_\ell^2)\right)}$$
 2. Update mean parameters:
-\[
-s_k^2 = \frac{1}{\sum_{i=1}^n r_{ik} + 1/\sigma^2}, \quad m_k = s_k^2 \sum_{i=1}^n r_{ik} y_i
-\]
+$$s_k^2 = \frac{1}{\sum_{i=1}^n r_{ik} + 1/\sigma^2}, \quad m_k = s_k^2 \sum_{i=1}^n r_{ik} y_i$$
 These two steps are iterated until convergence, which can be monitored using the ELBO.
 
 **ELBO derivation**
@@ -712,4 +705,47 @@ Create plots with *Monte Carlo standard error bars* to summarize the following:
 
 
 Write 1-2 paragraphs summarizing these results.
+
+### Solution
+
+The simulation was run on the cluster using three separate SLURM jobs, one per sample size ($n \in \{100, 1000, 10000\}$), each running 500 replicates. The script `R/run_scenario.R` accepts the sample size as a command-line argument, sources `R/functions_mixture.R` for the model functions, and saves results to `results/sim_n<n>.rds`. The `R/summarize_results.R` script combines the three result files and produces the summary statistics and plots below.
+
+```{r sim_results, echo = FALSE}
+library(tidyverse)
+library(here)
+source(here("R", "functions_mixture.R"))
+
+res100   <- readRDS(here("results", "sim_n100.rds"))
+res1000  <- readRDS(here("results", "sim_n1000.rds"))
+res10000 <- readRDS(here("results", "sim_n10000.rds"))
+
+all_res <- bind_rows(res100, res1000, res10000)
+summ    <- summarize_simulation(all_res)
+
+# Computation time table
+time_summary <- all_res %>%
+  group_by(n) %>%
+  summarise(
+    `Mean VB time (s)`    = round(mean(vb_time),    4),
+    `Mean Gibbs time (s)` = round(mean(gibbs_time), 2),
+    .groups = "drop"
+  )
+
+knitr::kable(time_summary,
+             caption = "Average computation time per simulation replicate by sample size")
+```
+
+```{r bias_plot, echo = FALSE, fig.cap = "Bias of estimated component means with 95% Monte Carlo standard error bars. Panels correspond to sample sizes n = 100, 1000, 10000. The dashed line marks zero bias.", fig.width = 10, fig.height = 5}
+plot_bias(summ$bias)
+```
+
+```{r coverage_plot, echo = FALSE, fig.cap = "Coverage of 95% credible/posterior intervals for each component mean with Monte Carlo standard error bars. The dashed line marks the nominal 95% level.", fig.width = 10, fig.height = 5}
+plot_coverage(summ$coverage)
+```
+
+**Summary of results**
+
+Both the Gibbs sampler and the variational Bayes (VB) algorithm recover the four true component means ($\mu = \{0, 5, 10, 20\}$) with very low bias across all sample sizes. At $n = 100$, the absolute bias for each component is below 0.02 for both methods, and by $n = 10000$ it falls below 0.002. The bias estimates for VB and Gibbs are essentially indistinguishable at every sample size, confirming that the mean-field approximation introduces negligible bias in this well-separated mixture setting. Monte Carlo standard errors for the bias shrink as $n$ increases, reflecting the improved estimation precision with larger samples.
+
+Coverage is close to the nominal 95% level for the Gibbs sampler at all sample sizes, ranging from about 0.94 to 0.96. For VB, coverage is also generally near 95%, although a handful of component–sample-size combinations are slightly below (as low as 0.92) due to the well-known phenomenon that the mean-field approximation tends to under-estimate posterior variance—resulting in slightly too-narrow credible intervals. This under-coverage is most visible at $n = 100$ and improves at larger $n$, consistent with the posterior concentrating and the approximation becoming more accurate. Regarding computation time, VB is dramatically faster than Gibbs: at $n = 100$, Gibbs takes roughly 5 seconds per replicate versus under 0.002 seconds for VB; at $n = 10000$ the difference is even more stark (about 454 seconds for Gibbs versus 0.09 seconds for VB). This highlights the key practical trade-off: VB is orders of magnitude faster, but the Gibbs sampler produces exact (asymptotically) posterior intervals with better calibrated coverage.
 

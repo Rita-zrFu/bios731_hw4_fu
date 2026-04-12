@@ -1,11 +1,11 @@
 ## summarize_results.R
 library(tidyverse)
 library(here)
-source(here("R", "functions_mixture.R"))
+source("R/functions_mixture.R")
 
-res100 <- readRDS(here("results", "sim_n100.rds"))
-res1000 <- readRDS(here("results", "sim_n1000.rds"))
-res10000 <- readRDS(here("results", "sim_n10000.rds"))
+res100 <- readRDS("results/sim_n100.rds")
+res1000 <- readRDS("results/sim_n1000.rds")
+res10000 <- readRDS("results/sim_n10000.rds")
 
 all_res <- bind_rows(res100, res1000, res10000)
 
@@ -28,5 +28,5 @@ print(time_summary)
 p1 <- plot_bias(bias_summary)
 p2 <- plot_coverage(coverage_summary)
 
-ggsave(here("plots", "bias_plot.png"), p1, width = 10, height = 6)
-ggsave(here("plots", "coverage_plot.png"), p2, width = 10, height = 6)
+ggsave("plots/bias_plot.png", p1, width = 10, height = 6)
+ggsave("plots/coverage_plot.png", p2, width = 10, height = 6)
